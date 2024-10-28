@@ -1,6 +1,6 @@
 CC = clang
-CFLAGS = -Wall -g -Iinclude
-LDFLAGS = -Llib -lpq
+CFLAGS = -Wall -g -I./include
+LDFLAGS = -L./lib -lpq
 TARGET = prog
 
 all: $(TARGET)
@@ -8,7 +8,7 @@ all: $(TARGET)
 $(TARGET): src/main.o
 	$(CC) $(LDFLAGS) -o $@ $^
 
-main.o: src/main.c 
+main.o: src/main.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 clean:

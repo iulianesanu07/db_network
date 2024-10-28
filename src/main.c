@@ -1,78 +1,80 @@
+#include "cjson/cJSON.h"
+#include <libpq-fe.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <libpq-fe.h>
 
 int main() {
-    PGconn *conn;
+  PGconn *conn;
 
-    // Paramètres de connexion à adapter
-    const char *conninfo = "host=localhost port=5432 user=iulianesanu";
+  // Paramètres de connexion à adapter
+  const char *conninfo = "host=localhost port=5432 user=iulianesanu";
 
-    // Create a connection
-    conn = PQconnectdb(conninfo);
+  // Create a connection
+  conn = PQconnectdb(conninfo);
 
-    if (PQstatus(conn) != CONNECTION_OK) {
-        printf("Error while connecting to the database : %s\n", PQerrorMessage(conn));
-        PQfinish(conn);
-        exit(EXIT_FAILURE);
-    }
+  if (PQstatus(conn) != CONNECTION_OK) {
+    printf("Error while connecting to the database : %s\n",
+           PQerrorMessage(conn));
+    PQfinish(conn);
+    exit(EXIT_FAILURE);
+  }
 
-    // Nice t'es connecte  
-    printf("Connection Established\n");
-    printf("Port: %s\n", PQport(conn));
-    printf("Host: %s\n", PQhost(conn));
-    printf("DBName: %s\n", PQdb(conn));
+  // Nice t'es connecte
+  printf("Connection Established\n");
+  printf("Port: %s\n", PQport(conn));
+  printf("Host: %s\n", PQhost(conn));
+  printf("DBName: %s\n", PQdb(conn));
 
-    // Test Creation table etu
-    char *query = "CREATE TABLE etu_bis2 ( "\
-                  " nom VARCHAR(100), "\
-                  " num int);";
-    
-    // Submit the query and retrieve the result
-    PGresult *res = PQexec(conn, query);
+  // Test Creation table etu
+  char *query = "CREATE TABLE putainEnfinCaMarche ( "
+                " nom VARCHAR(100), "
+                " num int);";
 
-    // Check the status of the query result
-    ExecStatusType resStatus = PQresultStatus(res);
+  // Submit the query and retrieve the result
+  PGresult *res = PQexec(conn, query);
 
-    // Convert the status to a string and print it
-    printf("Query Status: %s\n", PQresStatus(resStatus));
+  // Check the status of the query result
+  ExecStatusType resStatus = PQresultStatus(res);
 
-    // Check if the query execution was successful 
-    if (resStatus != PGRES_COMMAND_OK) {
-      printf("Error while executing the query: %s\n", PQerrorMessage(conn));
-      PQclear(res);         // Clear the result
-      PQfinish(conn);
-      exit(EXIT_FAILURE);
-    }
+  // Convert the status to a string and print it
+  printf("Query Status: %s\n", PQresStatus(resStatus));
 
-    // We have successfully executed the query
-    printf("Querry Executed Successfully\n");
+  // Check if the query execution was successful
+  if (resStatus != PGRES_COMMAND_OK) {
+    printf("Error while executing the query: %s\n", PQerrorMessage(conn));
+    PQclear(res); // Clear the result
+    PQfinish(conn);
+    exit(EXIT_FAILURE);
+  }
 
-    // Get the number of rows and columns in the query result
-    int rows = PQntuples(res);
-    int cols = PQnfields(res);
-    printf("Number of rows : %d\n", rows);
-    printf("Number of columns : %d\n", cols);
+  // We have successfully executed the query
+  printf("Querry Executed Successfully\n");
 
-    // Print the column names
-    for (int i = 0; i < cols; i++) {
-      printf("%s\t", PQfname(res, i));
+  // Get the number of rows and columns in the query result
+  int rows = PQntuples(res);
+  int cols = PQnfields(res);
+  printf("Number of rows : %d\n", rows);
+  printf("Number of columns : %d\n", cols);
+
+  // Print the column names
+  for (int i = 0; i < cols; i++) {
+    printf("%s\t", PQfname(res, i));
+  }
+  printf("\n");
+
+  // Print all the rows and columns
+  for (int i = 0; i < rows; i++) {
+    for (int j = 0; j < cols; j++) {
+      // Print the column value
+      printf("%s\t", PQgetvalue(res, i, j));
     }
     printf("\n");
+  }
 
-    // Print all the rows and columns
-    for (int i = 0; i < rows; i++) {
-      for (int j = 0; j < cols; j++) {
-        // Print the column value
-        printf("%s\t", PQgetvalue(res, i, j));
-      }
-      printf("\n");
-    }
+  // Clear the result
+  PQclear(res);
 
-    // Clear the result
-    PQclear(res);
+  PQfinish(conn);
 
-    PQfinish(conn);
-
-    return EXIT_SUCCESS;
-} 
+  return EXIT_SUCCESS;
+}

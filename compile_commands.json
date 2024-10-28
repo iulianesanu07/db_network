@@ -1,0 +1,17 @@
+[
+  {
+    "arguments": [
+      "/usr/bin/clang",
+      "-Wall",
+      "-g",
+      "-I./include",
+      "-c",
+      "-o",
+      "src/main.o",
+      "src/main.c"
+    ],
+    "directory": "/Users/iulianesanu/Documents/projects/db_network",
+    "file": "/Users/iulianesanu/Documents/projects/db_network/src/main.c",
+    "output": "/Users/iulianesanu/Documents/projects/db_network/src/main.o"
+  }
+]
