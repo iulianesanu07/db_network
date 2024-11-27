@@ -3,15 +3,16 @@
     "arguments": [
       "/usr/bin/clang",
       "-Wall",
-      "-g",
-      "-I./include",
+      "-Wextra",
+      "-std=c11",
+      "-Iinclude",
       "-c",
       "-o",
-      "src/main.o",
+      "build/main.o",
       "src/main.c"
     ],
     "directory": "/Users/iulianesanu/Documents/projects/db_network",
     "file": "/Users/iulianesanu/Documents/projects/db_network/src/main.c",
-    "output": "/Users/iulianesanu/Documents/projects/db_network/src/main.o"
+    "output": "/Users/iulianesanu/Documents/projects/db_network/build/main.o"
   }
 ]
