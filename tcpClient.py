@@ -21,7 +21,7 @@ print(data.decode('utf-8'))
 client_socket.close()
 """
 
-SERVER_ID = '192.168.1.36'
+SERVER_ID = '172.20.10.7'
 SERVER_PORT = 8080
 
 # Definition de la classe Card (en theorie temporaire)

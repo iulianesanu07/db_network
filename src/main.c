@@ -6,6 +6,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include "sql_queries.h"
 
 #define HOST "localhost"
 #define PORT_DB "5432"
@@ -29,6 +30,10 @@ char response[BUFFER_SIZE];
 int check(int exp, const char *msg);
 void packet_solver(char *buffer);
 void test_add_id_db(char *buffer);
+void get_all_table_names(PGconn *db);
+int all_tables_exist(PGconn *db);
+
+
 
 // Fonction de verification, permet une meilleur visibilite du code
 #define SOCKETERROR (-1)
@@ -68,6 +73,18 @@ void connectDB() {
 
 int main() {
   connectDB();
+
+  // Appel de la fonction all_tables_exist()
+    int result = all_tables_exist(db);
+    if (result == -1) {
+        // Erreur lors de la vérification
+        PQfinish(db);
+        return EXIT_FAILURE;
+    } else if (result == 0) {
+        // Une ou plusieurs tables sont manquantes
+        PQfinish(db);
+        return EXIT_FAILURE;
+    }
 
   // Variables client
   int client_socket;
@@ -179,35 +196,168 @@ void check_query(PGresult *res) {
   return;
 }
 
-void set_response(char * r) {
-  printf("len de r : %d", (int)strlen(r));
-  for (int i = 0; i < (int)strlen(r); i++) {
-    response[i] = r[i];
-  }
-
-  response[strlen(r)] = '\0';
-
-  return;
+void set_response(const char * r) {
+  strncpy(response, r, BUFFER_SIZE -1);
+  response[BUFFER_SIZE -1] = '\0'; 
 }
 
 void test_add_id_db(char *buffer) {
+    PGresult *res;
 
-  // Submit the query and retreive the result
-  PGresult *res = PQexec(db, CREA_TABLE_TEST);
-  check_query(res);
+    char query[254];
+    snprintf(query, sizeof(query), "%s'%s'%s", INSERT_ID_TABLE_TEST_1, buffer, INSERT_ID_TABLE_TEST_2);
+    res = PQexec(db, query);
+    check_query(res);
+    PQclear(res);
 
-  char query[254];
-  snprintf(query, sizeof(query), "%s'%s'%s", INSERT_ID_TABLE_TEST_1, buffer, INSERT_ID_TABLE_TEST_2);
-//  printf("%s\n",query);
-  res = PQexec(db, query);
-  check_query(res);
+    // Test fetch from db
+    res = PQexec(db, SELECT_DATA_TABLE_TEST);
+    check_query(res);
+    print_table(res);
 
-  // Test fetch from db
-  char *query2 = SELECT_DATA_TABLE_TEST;
-  res = PQexec(db, query2);
-  check_query(res);
-  print_table(res);
-  set_response((char *)PQresultStatus(res)); // segmentation fault
+    // Get the execution status as a string
+    ExecStatusType resStatus = PQresultStatus(res);
+    const char *statusMessage = PQresStatus(resStatus);
+    set_response(statusMessage);
+    PQclear(res); // Clear the result
 
-  return;
+    return;
+}
+
+void get_all_table_names(PGconn *db) {
+    const char *query =
+        "SELECT table_name FROM information_schema.tables "
+        "WHERE table_schema = 'public' AND table_type = 'BASE TABLE';";
+
+    PGresult *res = PQexec(db, query);
+
+    if (PQresultStatus(res) != PGRES_TUPLES_OK) {
+        fprintf(stderr, "Erreur lors de la récupération des noms des tables : %s\n", PQerrorMessage(db));
+        PQclear(res);
+        return;
+    }
+
+    int rows = PQntuples(res);
+
+    printf("Liste des tables existantes dans le schéma 'public' :\n");
+
+    for (int i = 0; i < rows; i++) {
+        char *table_name = PQgetvalue(res, i, 0);
+        printf("%s\n", table_name);
+    }
+
+    PQclear(res);
+}
+
+int all_tables_exist(PGconn *db) {
+    // Liste des tables requises
+    const char *required_tables[] = {
+        "badge",
+        "role",
+        "individu",
+        "porte",
+        "historique",
+        "employe",
+        "visiteur",
+        "maintenance",
+        "espace",
+        "zone_securise",
+        "se_trouver_dans"
+    };
+    int num_required_tables = sizeof(required_tables) / sizeof(required_tables[0]);
+
+    // Requête pour récupérer tous les noms de tables existantes dans le schéma 'public'
+    const char *query =
+        "SELECT table_name FROM information_schema.tables "
+        "WHERE table_schema = 'public' AND table_type = 'BASE TABLE';";
+
+    PGresult *res = PQexec(db, query);
+
+    if (PQresultStatus(res) != PGRES_TUPLES_OK) {
+        fprintf(stderr, "Erreur lors de la récupération des noms des tables : %s\n", PQerrorMessage(db));
+        PQclear(res);
+        return -1; // Indique une erreur
+    }
+
+    int num_existing_tables = PQntuples(res);
+
+    // Tableau pour stocker les noms des tables existantes
+    char **existing_tables = malloc(num_existing_tables * sizeof(char *));
+    if (existing_tables == NULL) {
+        fprintf(stderr, "Erreur d'allocation de mémoire.\n");
+        PQclear(res);
+        return -1;
+    }
+
+    // Récupération des noms de tables existantes et conversion en minuscules
+    for (int i = 0; i < num_existing_tables; i++) {
+        char *table_name = PQgetvalue(res, i, 0);
+        // Conversion en minuscules
+        int len = strlen(table_name);
+        existing_tables[i] = malloc((len + 1) * sizeof(char));
+        if (existing_tables[i] == NULL) {
+            fprintf(stderr, "Erreur d'allocation de mémoire.\n");
+            // Libération de la mémoire allouée précédemment
+            for (int j = 0; j < i; j++) {
+                free(existing_tables[j]);
+            }
+            free(existing_tables);
+            PQclear(res);
+            return -1;
+        }
+        for (int j = 0; j < len; j++) {
+            existing_tables[i][j] = table_name[j];
+        }
+        existing_tables[i][len] = '\0';
+    }
+
+    PQclear(res);
+
+    // Vérification de l'existence de chaque table requise
+    for (int i = 0; i < num_required_tables; i++) {
+        // Conversion du nom de la table requise en minuscules
+        char required_table_lower[256];
+        int len = strlen(required_tables[i]);
+        if (len >= (int)sizeof(required_table_lower)) {
+            fprintf(stderr, "Nom de table trop long : %s\n", required_tables[i]);
+            // Libération de la mémoire
+            for (int j = 0; j < num_existing_tables; j++) {
+                free(existing_tables[j]);
+            }
+            free(existing_tables);
+            return -1;
+        }
+        for (int j = 0; j < len; j++) {
+            required_table_lower[j] = required_tables[i][j];
+        }
+        required_table_lower[len] = '\0';
+
+        int found = 0;
+        for (int j = 0; j < num_existing_tables; j++) {
+            if (strcmp(required_table_lower, existing_tables[j]) == 0) {
+                found = 1;
+                break;
+            }
+        }
+        if (!found) {
+            fprintf(stderr, "La table requise '%s' n'existe pas dans la base de données.\n", required_tables[i]);
+            // Libération de la mémoire
+            for (int j = 0; j < num_existing_tables; j++) {
+                free(existing_tables[j]);
+            }
+            free(existing_tables);
+            return 0; // Une table manquante
+        }
+    }
+
+    // Toutes les tables requises existent
+    printf("Toutes les tables requises existent dans la base de données.\n");
+
+    // Libération de la mémoire
+    for (int i = 0; i < num_existing_tables; i++) {
+        free(existing_tables[i]);
+    }
+    free(existing_tables);
+
+    return 1; // Succès
 }
