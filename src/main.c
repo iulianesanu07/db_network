@@ -2,11 +2,13 @@
 #include <arpa/inet.h>
 #include <libpq-fe.h>
 #include <netinet/in.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <stdbool.h>
 
 #define PROTOCOL_VERSION 1
 
@@ -16,6 +18,7 @@
 
 // Types de requetes
 #define REQUEST_CHECK_BADGE 1
+#define REQUEST_MAINTENANCE_CHECK 2
 
 #define DB_HOST "localhost"
 #define DB_PORT "5432"
@@ -27,26 +30,34 @@
 #define BUFFER_SIZE 1024
 #define MAX_PENDING_CONNECTIONS 5
 
+#define MAX_CLIENTS 10
+#define CLIENT_TIMEOUT_SEC 10
+
 // Structure pour le contexte du serveur
 typedef struct {
-  PGconn *db_conn;
   int server_socket;
 } ServerContext;
+
+// Structure pour les arguments du thread client
+typedef struct {
+  int client_socket;
+  struct sockaddr_in client_addr;
+} ClientThreadArgs;
 
 // Prototypes des fonctions
 int initialize_server(ServerContext *context);
 void close_server(ServerContext *context);
-int handle_client_connection(ServerContext *context, int client_socket);
+void *handle_client_thread(void *args);
 int check(int exp, const char *msg);
 PGconn *connect_db();
 int all_tables_exist(PGconn *db_conn);
-void get_all_table_names(PGconn *db_conn);
-void process_client_request(ServerContext *context, const uint8_t *request,
+void process_client_request(PGconn *db_conn, const uint8_t *request,
                             size_t request_length, uint8_t *response,
                             size_t *response_length);
 void safe_exit(ServerContext *context, int exit_code);
 void log_error(const char *msg);
 int check_badge_exists(PGconn *db_conn, const char *badge_id);
+int create_all_tables(PGconn *db_conn);
 
 // Fonctions utilitaires
 int check(int exp, const char *msg) {
@@ -60,24 +71,21 @@ int check(int exp, const char *msg) {
 void log_error(const char *msg) { fprintf(stderr, "%s\n", msg); }
 
 PGconn *connect_db() {
-  char conninfo[256];
-  snprintf(conninfo, sizeof(conninfo), "host=%s port=%s dbname=%s", DB_HOST,
-           DB_PORT, DB_NAME);
-  //    snprintf(conninfo, sizeof(conninfo),
-  //            "host=%s port=%s dbname=%s user=%s password=%s",
-  //             DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD);
+    char conninfo[256];
+    snprintf(conninfo, sizeof(conninfo), "host=%s port=%s dbname=%s user=%s",
+             DB_HOST, DB_PORT, DB_NAME, DB_USER);
 
-  PGconn *db_conn = PQconnectdb(conninfo);
+    PGconn *db_conn = PQconnectdb(conninfo);
 
-  if (PQstatus(db_conn) != CONNECTION_OK) {
-    log_error("Erreur de connexion à la base de données :");
-    log_error(PQerrorMessage(db_conn));
-    PQfinish(db_conn);
-    return NULL;
-  }
+    if (PQstatus(db_conn) != CONNECTION_OK) {
+        log_error("Erreur de connexion à la base de données :");
+        log_error(PQerrorMessage(db_conn));
+        PQfinish(db_conn);
+        return NULL;
+    }
 
-  printf("Connexion à la base de données établie avec succès.\n");
-  return db_conn;
+    printf("Connexion à la base de données établie avec succès.\n");
+    return db_conn;
 }
 
 int create_all_tables(PGconn *db_conn) {
@@ -220,69 +228,180 @@ int check_badge_exists(PGconn *db_conn, const char *badge_id) {
 }
 
 int initialize_server(ServerContext *context) {
-  // Initialisation de la connexion à la base de données
-  context->db_conn = connect_db();
-  if (context->db_conn == NULL) {
-    return -1;
-  }
+    // Create server socket
+    context->server_socket = socket(AF_INET, SOCK_STREAM, 0);
+    if (check(context->server_socket, "Erreur de création du socket serveur") == -1) {
+        return -1;
+    }
 
-  // Vérification de l'existence des tables requises
-  int tables_exist = all_tables_exist(context->db_conn);
-  if (tables_exist != 1) {
-    PQfinish(context->db_conn);
-    return -1;
-  }
+    // Configure server address
+    struct sockaddr_in server_addr;
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+    server_addr.sin_port = htons(SERVER_PORT);
 
-  // Création du socket serveur
-  context->server_socket = socket(AF_INET, SOCK_STREAM, 0);
-  if (check(context->server_socket, "Erreur de création du socket serveur") ==
-      -1) {
-    PQfinish(context->db_conn);
-    return -1;
-  }
+    // Bind socket to port
+    if (check(bind(context->server_socket, (struct sockaddr *)&server_addr,
+                   sizeof(server_addr)),
+              "Erreur de liaison du socket au port") == -1) {
+        close(context->server_socket);
+        return -1;
+    }
 
-  // Configuration de l'adresse du serveur
-  struct sockaddr_in server_addr;
-  memset(&server_addr, 0, sizeof(server_addr));
-  server_addr.sin_family = AF_INET;
-  server_addr.sin_addr.s_addr = INADDR_ANY;
-  server_addr.sin_port = htons(SERVER_PORT);
+    // Start listening
+    if (check(listen(context->server_socket, MAX_PENDING_CONNECTIONS),
+              "Erreur de mise en écoute du serveur") == -1) {
+        close(context->server_socket);
+        return -1;
+    }
 
-  // Liaison du socket au port
-  if (check(bind(context->server_socket, (struct sockaddr *)&server_addr,
-                 sizeof(server_addr)),
-            "Erreur de liaison du socket au port") == -1) {
-    close(context->server_socket);
-    PQfinish(context->db_conn);
-    return -1;
-  }
-
-  // Mise en écoute du serveur
-  if (check(listen(context->server_socket, MAX_PENDING_CONNECTIONS),
-            "Erreur de mise en écoute du serveur") == -1) {
-    close(context->server_socket);
-    PQfinish(context->db_conn);
-    return -1;
-  }
-
-  printf("Serveur en écoute sur le port %d...\n", SERVER_PORT);
-  return 0;
+    printf("Serveur en écoute sur le port %d...\n", SERVER_PORT);
+    return 0;
 }
 
 void close_server(ServerContext *context) {
-  if (context->server_socket != -1) {
-    close(context->server_socket);
-  }
-  if (context->db_conn != NULL) {
-    PQfinish(context->db_conn);
-  }
+    if (context->server_socket != -1) {
+        close(context->server_socket);
+    }
 }
 
 void safe_exit(ServerContext *context, int exit_code) {
   close_server(context);
   exit(exit_code);
 }
-void process_client_request(ServerContext *context, const uint8_t *request,
+
+void insert_maintenance_result(PGconn *db_conn, const char *id_porte, bool resultat) {
+    const char *param_values[2];
+    param_values[0] = resultat ? "t" : "f";
+    param_values[1] = id_porte;
+
+    PGresult *res = PQexecParams(
+        db_conn,
+        "INSERT INTO Maintenance (resultat, id_porte) VALUES ($1::boolean, $2)",
+        2,
+        NULL,
+        param_values,
+        NULL,
+        NULL,
+        0);
+
+    if (PQresultStatus(res) != PGRES_COMMAND_OK) {
+        fprintf(stderr, "Erreur lors de l'insertion dans Maintenance : %s\n", PQerrorMessage(db_conn));
+    }
+
+    PQclear(res);
+}
+
+void *maintenance_check(void *arg) {
+    ServerContext *context = (ServerContext *)arg;
+
+    while (1) {
+        // Attendre CLIENT_TIMEOUT_SEC secondes
+        sleep(CLIENT_TIMEOUT_SEC);
+
+        // Connexion à la base de données
+        PGconn *db_conn = connect_db();
+        if (db_conn == NULL) {
+            fprintf(stderr, "Impossible de se connecter à la base de données pour la maintenance.\n");
+            continue;
+        }
+
+        // Récupérer la liste des portes
+        PGresult *res = PQexec(db_conn, "SELECT id_porte, ip_porte, port_porte FROM Porte");
+        if (PQresultStatus(res) != PGRES_TUPLES_OK) {
+            fprintf(stderr, "Erreur lors de la récupération des portes : %s\n", PQerrorMessage(db_conn));
+            PQclear(res);
+            PQfinish(db_conn);
+            continue;
+        }
+
+        int num_ports = PQntuples(res);
+        for (int i = 0; i < num_ports; i++) {
+            char *id_porte = PQgetvalue(res, i, 0);
+            char *ip_porte = PQgetvalue(res, i, 1);
+            int port_porte = atoi(PQgetvalue(res, i, 2));
+
+            // Créer un socket pour se connecter à la porte
+            int sock = socket(AF_INET, SOCK_STREAM, 0);
+            if (sock < 0) {
+                perror("Erreur de création du socket pour la maintenance");
+                continue;
+            }
+
+            struct sockaddr_in porte_addr;
+            memset(&porte_addr, 0, sizeof(porte_addr));
+            porte_addr.sin_family = AF_INET;
+            porte_addr.sin_port = htons(port_porte);
+            if (inet_pton(AF_INET, ip_porte, &porte_addr.sin_addr) <= 0) {
+                fprintf(stderr, "Adresse IP invalide pour la porte %s\n", id_porte);
+                close(sock);
+                continue;
+            }
+
+            // Définir un timeout pour la connexion
+            struct timeval timeout;
+            timeout.tv_sec = CLIENT_TIMEOUT_SEC;
+            timeout.tv_usec = 0;
+            setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+            setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+
+            // Tentative de connexion à la porte
+            if (connect(sock, (struct sockaddr *)&porte_addr, sizeof(porte_addr)) < 0) {
+                // La porte ne répond pas, insérer un résultat négatif dans la table Maintenance
+                fprintf(stderr, "Impossible de se connecter à la porte %s (%s:%d)\n", id_porte, ip_porte, port_porte);
+                insert_maintenance_result(db_conn, id_porte, false);
+                close(sock);
+                continue;
+            }
+
+            // Envoyer une requête de maintenance
+            uint8_t request[8];
+            request[0] = PROTOCOL_VERSION;
+            request[1] = REQUEST_MAINTENANCE_CHECK;
+            uint16_t data_length = 0;
+            uint16_t data_length_network_order = htons(data_length);
+            memcpy(&request[2], &data_length_network_order, sizeof(uint16_t));
+            uint32_t client_id_network_order = htonl(0);
+            memcpy(&request[4], &client_id_network_order, sizeof(uint32_t));
+
+            if (send(sock, request, 8, 0) != 8) {
+                perror("Erreur lors de l'envoi de la requête de maintenance");
+                close(sock);
+                continue;
+            }
+
+            // Recevoir la réponse
+            uint8_t response[BUFFER_SIZE];
+            ssize_t bytes_received = recv(sock, response, BUFFER_SIZE, 0);
+            if (bytes_received <= 0) {
+                fprintf(stderr, "Pas de réponse de la porte %s\n", id_porte);
+                insert_maintenance_result(db_conn, id_porte, false);
+                close(sock);
+                continue;
+            }
+
+            // Traiter la réponse
+            uint8_t code = response[0];
+            if (code == ACCESS_GRANTED) {
+                // La porte est en ligne
+                insert_maintenance_result(db_conn, id_porte, true);
+            } else {
+                // La porte a répondu mais avec une erreur
+                insert_maintenance_result(db_conn, id_porte, false);
+            }
+
+            close(sock);
+        }
+
+        PQclear(res);
+        PQfinish(db_conn);
+    }
+
+    return NULL;
+}
+
+void process_client_request(PGconn *db_conn, const uint8_t *request,
                             size_t request_length, uint8_t *response,
                             size_t *response_length) {
   if (request_length < 8) {
@@ -305,6 +424,7 @@ void process_client_request(ServerContext *context, const uint8_t *request,
   uint32_t client_id_network_order;
   memcpy(&client_id_network_order, &request[4], sizeof(uint32_t));
   uint32_t client_id = ntohl(client_id_network_order);
+
   // Vérification de la version du protocole
   if (version != PROTOCOL_VERSION) {
     fprintf(stderr, "Version de protocole incompatible.\n");
@@ -350,7 +470,7 @@ void process_client_request(ServerContext *context, const uint8_t *request,
            badge_id, client_id);
 
     // Vérifier si le badge existe
-    int exists = check_badge_exists(context->db_conn, badge_id);
+    int exists = check_badge_exists(db_conn, badge_id); // Modification ici
     if (exists == -1) {
       // Erreur lors de la vérification
       response[0] = ACCESS_DENIED;
@@ -384,91 +504,120 @@ void process_client_request(ServerContext *context, const uint8_t *request,
     break;
   }
 }
-int handle_client_connection(ServerContext *context, int client_socket) {
-  uint8_t buffer[BUFFER_SIZE];
-  uint8_t response[BUFFER_SIZE];
-  size_t response_length = 0;
+void *handle_client_thread(void *args) {
+    ClientThreadArgs *client_args = (ClientThreadArgs *)args;
+    int client_socket = client_args->client_socket;
+    struct sockaddr_in client_addr = client_args->client_addr;
+    free(client_args);  // Free the allocated memory for arguments
 
-  // Réception de la requête du client
-  ssize_t bytes_received = recv(client_socket, buffer, BUFFER_SIZE, 0);
-  if (bytes_received <= 0) {
-    perror("Erreur de réception des données du client");
+    uint8_t buffer[BUFFER_SIZE];
+    uint8_t response[BUFFER_SIZE];
+    size_t response_length = 0;
+
+    // Set socket timeout
+    struct timeval timeout;
+    timeout.tv_sec = CLIENT_TIMEOUT_SEC;
+    timeout.tv_usec = 0;
+
+    if (setsockopt(client_socket, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout,
+                   sizeof(timeout)) < 0) {
+        perror("Erreur lors du réglage du timeout du socket");
+        close(client_socket);
+        pthread_exit(NULL);
+    }
+
+    // Each thread needs its own database connection
+    PGconn *db_conn = connect_db();
+    if (db_conn == NULL) {
+        fprintf(stderr, "Impossible de se connecter à la base de données.\n");
+        close(client_socket);
+        pthread_exit(NULL);
+    }
+
+    // Receive data from the client
+    ssize_t bytes_received = recv(client_socket, buffer, BUFFER_SIZE, 0);
+    if (bytes_received <= 0) {
+        if (bytes_received == 0) {
+            printf("Le client a fermé la connexion.\n");
+        } else {
+            perror("Erreur de réception des données du client ou timeout atteint");
+        }
+        PQfinish(db_conn);
+        close(client_socket);
+        pthread_exit(NULL);
+    }
+
+    // Process the client's request
+    process_client_request(db_conn, buffer, (size_t)bytes_received, response,
+                           &response_length);
+
+    // Send the response to the client
+    ssize_t bytes_sent = send(client_socket, response, response_length, 0);
+    if (bytes_sent < 0) {
+        perror("Erreur d'envoi de la réponse au client");
+    }
+
+    PQfinish(db_conn);
     close(client_socket);
-    return -1;
-  }
-
-  // Traitement de la requête
-  process_client_request(context, buffer, (size_t)bytes_received, response,
-                         &response_length);
-
-  // Envoi de la réponse au client
-  ssize_t bytes_sent = send(client_socket, response, response_length, 0);
-  if (bytes_sent < 0) {
-    perror("Erreur d'envoi de la réponse au client");
-    close(client_socket);
-    return -1;
-  }
-
-  close(client_socket);
-  return 0;
+    pthread_exit(NULL);
 }
 
 int main() {
-  ServerContext context;
-  context.db_conn = NULL;
-  context.server_socket = -1;
+    ServerContext context;
+    context.server_socket = -1;
 
-  // Initialisation de la connexion à la base de données
-  context.db_conn = connect_db();
-  if (context.db_conn == NULL) {
-    fprintf(stderr, "Impossible de se connecter à la base de données.\n");
-    return EXIT_FAILURE;
-  }
-
-  // Vérification de l'existence des tables
-  int tables_exist = all_tables_exist(context.db_conn);
-  if (tables_exist == -1) {
-    // Erreur lors de la vérification
-    PQfinish(context.db_conn);
-    return EXIT_FAILURE;
-  } else if (tables_exist == 0) {
-    // Les tables n'existent pas, on les crée
-    printf("Les tables n'existent pas, création des tables...\n");
-    if (create_all_tables(context.db_conn) != 0) {
-      fprintf(stderr, "Erreur lors de la création des tables.\n");
-      PQfinish(context.db_conn);
-      return EXIT_FAILURE;
-    } else {
-      printf("Toutes les tables ont été créées avec succès.\n");
-    }
-  }
-
-  // Initialisation du serveur
-  if (initialize_server(&context) == -1) {
-    safe_exit(&context, EXIT_FAILURE);
-  }
-
-  // Boucle principale du serveur
-  while (1) {
-    struct sockaddr_in client_addr;
-    socklen_t client_addr_len = sizeof(client_addr);
-
-    int client_socket =
-        accept(context.server_socket, (struct sockaddr *)&client_addr,
-               &client_addr_len);
-    if (client_socket == -1) {
-      perror("Erreur lors de l'acceptation d'une connexion client");
-      continue;
+    // Initialisation du serveur
+    if (initialize_server(&context) == -1) {
+        safe_exit(&context, EXIT_FAILURE);
     }
 
-    // Gestion de la connexion client
-    if (handle_client_connection(&context, client_socket) == -1) {
-      // En cas d'erreur, on continue avec la prochaine connexion
-      continue;
+    // Lancer le thread de maintenance
+    pthread_t maintenance_thread;
+    if (pthread_create(&maintenance_thread, NULL, maintenance_check, &context) != 0) {
+        perror("Erreur lors de la création du thread de maintenance");
+        safe_exit(&context, EXIT_FAILURE);
     }
-  }
 
-  // Fermeture du serveur (normalement, on n'arrivera jamais ici)
-  safe_exit(&context, EXIT_SUCCESS);
-  return 0;
+    // Détacher le thread de maintenance pour qu'il libère ses ressources à la fin
+    pthread_detach(maintenance_thread);
+
+    // Boucle principale du serveur pour accepter les connexions des clients
+    while (1) {
+        struct sockaddr_in client_addr;
+        socklen_t client_addr_len = sizeof(client_addr);
+
+        // Attendre une connexion entrante
+        int client_socket = accept(context.server_socket, (struct sockaddr *)&client_addr, &client_addr_len);
+        if (client_socket == -1) {
+            perror("Erreur lors de l'acceptation d'une connexion client");
+            continue;
+        }
+
+        // Allouer de la mémoire pour les arguments du thread client
+        ClientThreadArgs *client_args = malloc(sizeof(ClientThreadArgs));
+        if (client_args == NULL) {
+            perror("Erreur d'allocation de mémoire pour les arguments du thread");
+            close(client_socket);
+            continue;
+        }
+
+        client_args->client_socket = client_socket;
+        client_args->client_addr = client_addr;
+
+        // Créer un nouveau thread pour gérer le client
+        pthread_t client_thread;
+        if (pthread_create(&client_thread, NULL, handle_client_thread, (void *)client_args) != 0) {
+            perror("Erreur lors de la création du thread client");
+            free(client_args);
+            close(client_socket);
+            continue;
+        }
+
+        // Détacher le thread client pour qu'il libère ses ressources à la fin
+        pthread_detach(client_thread);
+    }
+
+    // Fermeture du serveur (normalement, on n'arrivera jamais ici)
+    safe_exit(&context, EXIT_SUCCESS);
+    return 0;
 }
