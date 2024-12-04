@@ -64,7 +64,7 @@ static const char* CREATE_TABLE_EMPLOYE =
 static const char* CREATE_TABLE_VISITEUR =
     "CREATE TABLE Visiteur ("
     "    id_visiteur INTEGER PRIMARY KEY REFERENCES Individu(id_individu),"
-    "    niveau_acces INTEGER NOT NULL CHECK (niveau_acces BETWEEN 1 AND 5),"
+    "    niveau_acces INTEGER NOT NULL CHECK (niveau_acces BETWEEN 1 AND 10),"
     "    date_visite DATE NOT NULL CHECK (date_visite > '2024-01-01'),"
     "    societe VARCHAR(50) NOT NULL"
     ");";
@@ -90,7 +90,7 @@ static const char* CREATE_TABLE_ESPACE =
 static const char* CREATE_TABLE_ZONE_SECURISE =
     "CREATE TABLE Zone_Securise ("
     "    id_zone_securise SERIAL PRIMARY KEY,"
-    "    niveau_securite INTEGER NOT NULL CHECK (niveau_securite BETWEEN 1 AND 5)"
+    "    niveau_securite INTEGER NOT NULL CHECK (niveau_securite BETWEEN 1 AND 10)"
     ");";
 
 // Création de la table Se_Trouver_Dans

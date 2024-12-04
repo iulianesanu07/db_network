@@ -97,7 +97,7 @@ def create_porte(conn):
     print(f"Porte créée avec ID {id_porte}")
 
 def create_zone_securise(conn):
-    niveau_securite = int(input("Niveau de sécurité (1-5) : "))
+    niveau_securite = int(input("Niveau de sécurité (1-10) : "))
 
     cur = conn.cursor()
     cur.execute("""

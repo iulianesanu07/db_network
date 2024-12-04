@@ -66,13 +66,13 @@ def send_badge_verification(badge_id, client_id):
     message = response[1:].decode('utf-8')
 
     if response_code == ACCESS_GRANTED:
-        print(f"Accès autorisé : {message}")
+        print(f"-> {message}")
     elif response_code == ACCESS_DENIED:
-        print(f"Accès refusé : {message}")
+        print(f"-> {message}")
     elif response_code == PASSWORD_REQUIRED:
-        print(f"Mot de passe requis : {message}")
+        print(f"-> {message}")
         # Demander le mot de passe à l'utilisateur
-        password = input("Veuillez entrer votre mot de passe (salaire) : ")
+        password = input("Veuillez entrer votre mot de passe : ")
 
         # Envoyer le mot de passe au serveur
         send_password(badge_id, client_id, password)
@@ -130,9 +130,9 @@ def send_password(badge_id, client_id, password):
     message = response[1:].decode('utf-8')
 
     if response_code == ACCESS_GRANTED:
-        print(f"Accès autorisé : {message}")
+        print(f"-> {message}")
     elif response_code == ACCESS_DENIED:
-        print(f"Accès refusé : {message}")
+        print(f"-> {message}")
     else:
         print(f"Code de réponse inconnu : {response_code}")
 
